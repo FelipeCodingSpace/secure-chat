@@ -65,7 +65,8 @@ app.use(express.json());
 
 /*routes*/
 function authenticateUser(req, res, next){
-  const token = req.query.token;
+  const token = req.headers.authorization?.split(" ")[1];
+  //const token = req.query.token;
   if(!token){
     console.log("error sem token"); 
     return res.sendStatus(400);
@@ -74,7 +75,7 @@ function authenticateUser(req, res, next){
   jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, user) =>{
     if(err) {
       console.log(err);
-      return res.sendStatus(403);
+      return res.sendStatus(401);
     }
     req.user = user;
     next();
@@ -94,7 +95,7 @@ app.get("/chat", authenticateUser, (req, res) => {
   if (!req.user) {
     return res.redirect("/"); // Ends the response here
   }
-  res.sendFile(path.join(staticFilesRoot, "pages/chat.html"));
+  res.status(200).sendFile(path.join(staticFilesRoot, "pages/chat.html"));
 });
 
 app.get("/admin/api/users", (req, res)=>{
@@ -112,14 +113,30 @@ app.get("/admin/api/users", (req, res)=>{
   });
 });
 
+app.get("/admin/api/friends", (req, res)=>{
+  db.all("SELECT * FROM friends;", (err, rows) => {
+    if (err) {
+      console.error("Database query error:", err);
+      return res.status(500).json({ message: "Erro ao buscar os usuários no banco de dados" });
+    }
+
+    if (rows && rows.length > 0) {
+      return res.status(200).json({ users: rows });
+    } else {
+      return res.status(404).json({ message: "Nenhum usuário registrado" });
+    }
+  });
+})
+
 app.post("/token", (req, res)=>{
+  console.log(req.body);
   const refreshToken = req.body.refreshToken;
   if(!refreshToken) return res.status(401);
   if(!refresh.includes(refreshToken)) return res.status(403);
-  jtw.verify(refreshToken, REFRESH_TOKEN_SECRET, (err, user)=>{
+  jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET, (err, user)=>{
     if(err) return res.status(403);
-    const accessToken = jwt.sign({username: user.username}, ACCESS_TOKEN_SECRET);
-    res.json({accessToken});
+    const accessToken = jwt.sign({username: user.username}, process.env.ACCESS_TOKEN_SECRET);
+    res.status(200).json({accessToken});
   })
 });
 
@@ -191,6 +208,86 @@ app.post("/api/register", (req, res) => {
   });
 });
 
+// Adiciona um amigo
+app.post("/api/addFriend", authenticateUser, (req, res) => {
+
+  console.log("authorized request");
+  const { friendUsername } = req.body;
+
+  if (req.user.username === friendUsername) {
+    return res.status(400).json({ message: "Você não pode ser amigo de si mesmo!" });
+  }
+
+  db.get("SELECT * FROM users WHERE username = ?", [req.user.username], (err, user1)=>{
+    if(err)
+    {
+      return res.status(404).json({ message: "Erro ao adicionar amigo." });
+    }
+    db.get("SELECT * FROM users WHERE username = ?", [friendUsername], (err, user2)=>{
+      if(err)
+      {
+        return res.status(404).json({ message: "Erro ao adicionar amigo." });
+      }
+      db.run(
+        "INSERT INTO friends VALUES(NULL, ?, ?);",
+        [user1.id, user2.id],
+        (err) => {
+          if (err) {
+            return res.status(500).json({ message: "Erro ao adicionar amigo." });
+          }
+          res.status(200).json({ message: "Amigo adicionado com sucesso!" });
+      });
+    });
+  });
+});
+
+
+// Verifica se dois usuários são amigos
+app.get("/api/isFriend/", authenticateUser, (req, res) => {
+  const { friendUsername } = req.query;
+  console.log(req.user);
+  console.log(friendUsername);
+  if (!friendUsername) {
+    console.log("friendUsername está vazio");
+    return res.status(400).json({ message: "No username given!" });
+  }
+
+  db.get("SELECT * FROM users WHERE username = ?", [req.user.username], (err, user1) => {
+    if (err || !user1) {
+      console.log(`não foi possível achar user1 ${user1.username}`);
+      return res.status(404).json({ message: `Unable to find user: ${req.user.username}` });
+    }
+
+    db.get("SELECT * FROM users WHERE username = ?", [friendUsername], (err, user2) => {
+      if (err || !user2) {
+        console.log(`não foi possível achar user1 ${user2.username}`);
+        return res.status(404).json({ message: `Unable to find user: ${friendUsername}` });
+      }
+
+      db.get(
+        `SELECT * FROM friends 
+         WHERE (id_friend1 = ? AND id_friend2 = ?) 
+         OR (id_friend1 = ? AND id_friend2 = ?)`,
+        [user1.id, user2.id, user2.id, user1.id],
+        (err, match) => {
+          if (err) {
+            console.error("Database error:", err);
+            return res.status(500).json({ message: "Internal server error" });
+          }
+          if (!match) {
+            console.log(`${user1.id} and ${user2.id}`)
+            console.log(`não existe amizade entre user1 e user2`);
+            return res.status(404).json({ message: "Users are not friends" });
+          }
+          // Users are friends, send a response
+          console.log(`match ${match}`);
+          return res.status(200).json({ isFriend: true });
+        }
+      );
+    });
+  });
+});
+
 /*websocket events*/
 // defines namespaces to pipe data through different channels for users and groups;
 const ioUser = io.of("/users");
@@ -229,7 +326,7 @@ ioGroup.on("connection", (socket) => {
 
   socket.on("send message", (data) => {
     socket.to(data.group_id).emit("receive message", { id: socket.id, msg: data.msg });
-	console.log(`Sent key: ${sharedKey}`);
+  console.log(`Sent key: ${sharedKey}`);
   });
 });
 
@@ -245,12 +342,12 @@ ioUser.on("connection", (socket) => {
 
   socket.on("create secret", (data)=>
   {
-  	socket.to(data.dst).emit("create secret", {src: data.src, key: data.key});
+    socket.to(data.dst).emit("create secret", {src: data.src, key: data.key});
   })
 
   // watches on for send messages, and redirects it to the correct room.
   socket.on("send message", (data) => {
-  	console.log(`message from ${data.id} to ${data.sender}: ${new TextDecoder().decode(data.msg)}`)
+    console.log(`message from ${data.id} to ${data.sender}: ${new TextDecoder().decode(data.msg)}`)
     socket.to(data.id).emit("receive message", { id: socket.id, sender: data.sender, msg: data.msg});
   });
 

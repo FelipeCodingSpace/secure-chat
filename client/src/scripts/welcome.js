@@ -34,10 +34,23 @@ document.getElementById("loginForm").addEventListener("submit", async function (
       const result = await response.json();
       displayMessage("Login realizado com sucesso!");
       sessionStorage.setItem("username", username);
-      localStorage.setItem("accessToken", result.accessToken);
-      localStorage.setItem("refreshToken", result.refreshToken);
+      sessionStorage.setItem("accessToken", result.accessToken);
+      sessionStorage.setItem("refreshToken", result.refreshToken);
 
-      window.location.href = `/chat/?token=${encodeURIComponent(result.accessToken)}`; // Redireciona para o sistema
+      const pageResponse = await fetch("/chat", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${result.accessToken}`, // Ensure this value is correct
+        },
+      });
+
+      console.log(pageResponse);
+
+      if(pageResponse.ok) {
+        document.open(); // Open the document for writing
+        document.write(await pageResponse.text()); // Replace the entire document content
+        document.close(); // Close the document to finalize changes
+      }
     } else {
       displayMessage(result.message || "Erro ao logar", false);
     }

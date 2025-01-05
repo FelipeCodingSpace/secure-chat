@@ -7,8 +7,8 @@ const socket = io("/users",
   {"auth": 
     {
       "username": me.username, 
-      "token": localStorage.getItem("accessToken"),
-      "refresh": localStorage.getItem("refreshToken"),
+      "token": sessionStorage.getItem("accessToken"),
+      "refresh": sessionStorage.getItem("refreshToken"),
     }
   });
 const usersDiv = document.getElementById("users");
@@ -169,23 +169,43 @@ function storeMsg(sender, keyhalf, msg, secret)
   localStorage.setItem(key, JSON.stringify(messages));
 }
 
-export function sendMessage()
+async function isFriend(friendUsername){
+
+  const response = await fetchWithTokenRetry(`/api/isFriend?friendUsername=${encodeURIComponent(friendUsername)}`, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${sessionStorage.getItem("accessToken")}`,
+    },
+  });
+
+  if (response.ok) {
+    return true;
+  } else {
+    return false;
+  }
+
+}
+
+async function sendMessage()
 {
   if(friendId)
   {
       const user = pairedKeys.find((user) => user.id === friendId);
-      const bf = new Blowfish(user.secret, Blowfish.MODE.ECB, Blowfish.PADDING.NULL);
+      console.log(user.username);
+      if(await isFriend(user.username)){
+        const bf = new Blowfish(user.secret, Blowfish.MODE.ECB, Blowfish.PADDING.NULL);
 
-      const textbox = document.getElementById("textbox");
-      const message = textbox.value;
-      const cryptoMessage = bf.encode(message);
+        const textbox = document.getElementById("textbox");
+        const message = textbox.value;
+        const cryptoMessage = bf.encode(message);
 
-      storeMsg(me.username, user.username, cryptoMessage, user.secret);
+        storeMsg(me.username, user.username, cryptoMessage, user.secret);
 
-      displayMessage(me.username, cryptoMessage, user.secret);
+        displayMessage(me.username, cryptoMessage, user.secret);
 
-      socket.emit("send message", {"id": friendId, "sender": me.username, "msg": cryptoMessage});
-      textbox.value = '';
+        socket.emit("send message", {"id": friendId, "sender": me.username, "msg": cryptoMessage});
+        textbox.value = '';
+      }
   }
 }
 
@@ -225,5 +245,81 @@ export function selectUser(element)
   });
 }
 
+async function refreshToken() {
+  try {
+    const response = await fetch("/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        refreshToken: sessionStorage.getItem("refreshToken"),
+        })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      sessionStorage.setItem("accessToken", data.accessToken); // Save new access token
+      return data.accessToken;
+    } else {
+      throw new Error("Failed to refresh token");
+    }
+  } catch (err) {
+    console.error("Error refreshing token:", err);
+    alert("Sua sessão expirou. Faça login novamente.");
+    window.location.href = "/welcome"; // Redirect to login
+    return null;
+  }
+}
+
+async function fetchWithTokenRetry(url, options) {
+  try {
+    // Attempt the fetch request
+    const response = await fetch(url, options);
+
+    if (response.status === 401) {
+      // Token might have expired, try refreshing it
+      const newAccessToken = await refreshToken();
+      if (newAccessToken) {
+        // Retry the original request with the new token
+        options.headers.Authorization = `Bearer ${newAccessToken}`;
+        return await fetch(url, options);
+      }
+    }
+
+    return response; // Return original response if no 401 or after retry
+  } catch (err) {
+    console.error("Fetch request failed:", err);
+    throw err; // Propagate error to the caller
+  }
+}
+
+async function addFriend() {
+  const friendUsername = prompt("Digite o nome de usuário do amigo:");
+  if (friendUsername) {
+    try {
+      const response = await fetchWithTokenRetry("/api/addFriend", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${sessionStorage.getItem("accessToken")}`,
+        },
+        body: JSON.stringify({ friendUsername }),
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        alert(data.message);
+      } else {
+        alert(data.message || "Erro ao adicionar amigo.");
+      }
+    } catch (err) {
+      console.error("Erro ao adicionar amigo:", err);
+      alert("Erro ao adicionar amigo.");
+    }
+  }
+}
+
 window.sendMessage = sendMessage;
 window.selectUser = selectUser;
+window.addFriend = addFriend;
